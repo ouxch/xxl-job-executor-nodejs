@@ -1,0 +1,13 @@
+{
+  "presets": ["env"],
+  "plugins": [
+    "transform-object-rest-spread", "transform-runtime",
+    ["module-resolver", {
+      "root": ["."],
+      "alias": {
+        "@src": "./src",
+        "@test": "./test"
+      }
+    }]
+  ]
+}
