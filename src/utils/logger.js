@@ -1,7 +1,6 @@
-import fs from 'fs'
-import os from 'os'
-import { format } from '@src/utils/purefuncs'
-
+const fs = require('fs')
+const os = require('os')
+const { format } = require('./purefuncs')
 const debug = require('debug')
 
 const dErr = debug('error')
@@ -20,7 +19,7 @@ module.exports = (ns, logFilePath) => {
   }
   if (!!logFilePath) {
     const logFunc = (...data) => {
-      const content = data.map((value) => typeof(value) === 'string' ? value : format(value)).join(' ')
+      const content = data.map((value) => typeof (value) === 'string' ? value : format(value)).join(' ')
       fs.writeFileSync(logFilePath, content + os.EOL, { flag: 'a' })
     }
     Object.keys(logger).forEach((funcName) => logger[funcName].log = logFunc)
