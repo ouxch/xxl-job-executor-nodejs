@@ -5,7 +5,7 @@ const { initExecutor, koaRestRouter, expressRestRouter } = require('./executor')
  * @param {any} app express app or koa app
  * @param {String} appType express or koa
  * @param {String} scheduleCenterUrl xxl-job-admin address: http://host:port/xxl-job-admin
- * @param {String} executorKey the executor's name, configure executor in schedule center need this. eg:'xa-circle-api'
+ * @param {String} executorKey the executor's name, configure executor in schedule center need this. eg:'xxl-job-executor-nodejs'
  * @param {String} executorUrl executor own address: http://host:port/xxl-job-executor
  * @param {String} accessToken just allow communication between schedule center and executor when AccessToken of each other matched
  * @param {String} jobLogPath job log will be stored in the specified location in a specific format(2021-05-01-logId.log)

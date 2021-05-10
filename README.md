@@ -47,7 +47,7 @@ const executorConfig = {
   app,
   appType: 'koa', // or 'express'
   scheduleCenterUrl: 'http://127.0.0.1:8080/xxl-job-admin',
-  executorKey: 'xa-xxl-job',
+  executorKey: 'xxl-job-executor-nodejs',
   executorUrl: 'http://127.0.0.1:3000/job',
   accessToken: '9217CF7406F643BEB71CC00731129CC9',
   jobLogPath: 'logs/job',
