@@ -1,59 +1,75 @@
-import config from '@src/config'
-import EventEmitter from 'events'
-import logger from '@src/utils/logger'
-import { compose, format, omitNil, postTask, propOr, tapTask, Task } from '@src/utils/purefuncs'
+/*import area*/
+const logger = require('../utils/logger')
+const log = logger('xxl-job-executor')
+const { compose, format, omitNil, propOr, postTask, Task, tapTask } = require('../utils/purefuncs')
+const formatData = compose(format, propOr({}, 'data'))
+const xxlPostTask = ({ url, data, postConfig }) => postTask(url, data, postConfig)
 
-const { accessToken, adminAddress, appName, executorUrl } = config
-const log = logger('schedule-center')
-const headers = { 'xxl-job-access-token': accessToken }
-const xxlPost = ({ url, data }) => postTask(url, data, { headers })
-const formatResData = compose(format, propOr({}, 'data'))
+/*variable area*/
+let XXL_HEADERS
+let REGISTRY_URL
+let REGISTRY_BODY
+let REGISTRY_REMOVE_URL
+let REGISTRY_REMOVE_BODY
+let CALLBACK_URL
 
+/*function area*/
 /**
- * registry executor emitter
+ * register executor to schedule center on startup
  */
-class RegistryEmitter extends EventEmitter {}
-const registryEmitter = new RegistryEmitter()
-const registryEmitterEvent = 'REGISTRY_EXECUTOR'
-registryEmitter.on('error', (err) => log.err('registryEmitter on error:', err))
-registryEmitter.on(registryEmitterEvent, async () => await registryTask.run().promise())
-
-// executor registry
-const registryUrl = `${adminAddress}/api/registry`
-const registryData = { 'registryGroup': 'EXECUTOR', 'registryKey': appName, 'registryValue': executorUrl }
-const registryTask = Task.of({ url: registryUrl, data: registryData })
-  // The executor needs to register with the schedule center every 30 seconds.
-  // Do not register for more than 90 seconds, the schedule center will remove the executor.
-  .chain(tapTask(() => setTimeout(() => registryEmitter.emit(registryEmitterEvent), 30000)))
-  .chain(xxlPost)
-  .chain(tapTask((response) => log.info(`registry ==> ${formatResData(response)}`)))
-  .orElse((err) => {
-    log.err(`registry error:${propOr(err.toString(), 'message', err)}`)
-    return Task.of()
+const registry = () => {
+  Task.of({ url: REGISTRY_URL, data: REGISTRY_BODY, postConfig: { headers: XXL_HEADERS } })
+    .chain(xxlPostTask)
+    .chain(tapTask((response) => log.info(`registry ==> ${format(REGISTRY_BODY)} ==> ${formatData(response)}`)))
+    .orElse((err) => {
+      log.err(`registry error:${propOr(err.toString(), 'message', err)}`)
+      return Task.of()
+    })
+    // The executor needs to register with the schedule center every 30 seconds.
+    // Do not register for more than 90 seconds, the schedule center will remove the executor.
+    .chain(tapTask(() => setTimeout(registry, 30000)))
+    .run().promise()
+}
+/**
+ * remove executor from schedule center on shutdown
+ */
+const removeWhenShutDown = () => {
+  process.on('SIGINT', async () => {
+    await Task.of({ url: REGISTRY_REMOVE_URL, data: REGISTRY_REMOVE_BODY, postConfig: { headers: XXL_HEADERS } })
+      .chain(xxlPostTask)
+      .chain(tapTask((response) => log.info(`registry remove ==> ${format(REGISTRY_REMOVE_BODY)} ==> ${formatData(response)}`)))
+      .orElse((err) => {
+        log.err(`registry remove error:${propOr(err.toString(), 'message', err)}`)
+        return Task.of()
+      }).run().promise()
+    process.exit(1)
   })
-
-// executor registry remove
-const registryRemoveUrl = `${adminAddress}/api/registryRemove`
-const registryRemoveData = { 'registryGroup': 'EXECUTOR', 'registryKey': appName, 'registryValue': executorUrl }
-const registryRemoveTask = Task.of({ url: registryRemoveUrl, data: registryRemoveData })
-  .chain(xxlPost)
-  .chain(tapTask((response) => log.info(`registry remove ==> ${formatResData(response)}`)))
-  .orElse((err) => {
-    log.err(`registry remove error:${propOr(err.toString(), 'message', err)}`)
-    return Task.of()
-  })
-
-// callback when job execute finish
-const callbackUrl = `${adminAddress}/api/callback`
-const callbackTask = ({ logId, handleCode = 200, handleMsg = 'success' }) => {
+}
+/**
+ * report job result to schedule center when job execute finish
+ */
+const callback = async ({ logId, handleCode = 200, handleMsg = 'success' }) => {
   const data = [omitNil({ logId, logDateTim: Date.now(), handleCode, handleMsg })]
-  return Task.of({ url: callbackUrl, data })
-    .chain(xxlPost)
-    .chain(tapTask((response) => log.info(`callback ==> ${format(data)} ==> ${formatResData(response)}`)))
+  await Task.of({ url: CALLBACK_URL, data, postConfig: { headers: XXL_HEADERS } })
+    .chain(xxlPostTask)
+    .chain(tapTask((response) => log.info(`callback ==> ${format(data[0])} ==> ${formatData(response)}`)))
     .orElse((err) => {
       log.err(`callback error:${propOr(err.toString(), 'message', err)}`)
       return Task.of({})
-    })
+    }).run().promise()
 }
 
-export { registryTask, registryRemoveTask, callbackTask }
+const initScheduleCenter = (scheduleCenterUrl, executorKey, executorUrl, accessToken) => {
+  XXL_HEADERS = { 'xxl-job-access-token': accessToken }
+  REGISTRY_URL = `${scheduleCenterUrl}/api/registry`
+  REGISTRY_BODY = { 'registryGroup': 'EXECUTOR', 'registryKey': executorKey, 'registryValue': executorUrl }
+  REGISTRY_REMOVE_URL = `${scheduleCenterUrl}/api/registryRemove`
+  REGISTRY_REMOVE_BODY = { 'registryGroup': 'EXECUTOR', 'registryKey': executorKey, 'registryValue': executorUrl }
+  CALLBACK_URL = `${scheduleCenterUrl}/api/callback`
+
+  registry()
+  removeWhenShutDown()
+}
+
+/*export area*/
+module.exports = { initScheduleCenter, callback }
