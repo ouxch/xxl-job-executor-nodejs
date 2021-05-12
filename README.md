@@ -1,63 +1,43 @@
 # A Node.js simple implementation of xxl job executor
 
-## usage:
-
-`add dependency, git commands:`
+### 添加组件依赖
 
 ```shell
-git submodule add https://github.com/Aouchinx/xxl-job-executor-nodejs.git modules/xxl-job-executor-nodejs
+git clone https://github.com/Aouchinx/xxl-job-executor-nodejs.git your_path
 ```
 
-`package.json`(don't forget run yarn)
+`package.json`
 
 ```json
 {
   "dependencies": {
-    "xxl-job-executor-nodejs": "./modules/xxl-job-executor-nodejs"
+    "xxl-job-executor-nodejs": "your_path/xxl-job-executor-nodejs"
   }
 }
 ```
 
-`js code`
+### 使用组件
+
 ```javascript
-// all jobs, note that a job must declared as a promise function, the job's execution log must be output by the jobLogger
+const { applyXxlJobMiddleware } = require('xxl-job-executor-nodejs')
+applyXxlJobMiddleware(app, appType, executorUri, executorUrl, executorKey, scheduleCenterUrl, accessToken, jobLogPath, jobHandlers)
+```
+
+具体用法参考 `examples/express.js`、`examples/koa.js`
+
+### 注意事项
+
+任务必须被定义成 `promise` 函数，任务的执行日志必须由 `jobLogger` 输出，如：
+
+```javascript
 const demoJobHandler = async ({ jobLogger, ...jobParams }) => {
   jobLogger.info('job start, it will takes about 10 seconds')
   const sleep = async (millis) => new Promise((resolve) => setTimeout(resolve, millis))
   await sleep(10000)
   jobLogger.info('job finish')
 }
-const jobHandlers = new Map([['demoJobHandler', demoJobHandler]])
-
-// koa app
-const Koa = require('koa')
-const bodyparser = require('koa-bodyparser')
-const app = new Koa()
-app.use(bodyparser())
-
-// or express app
-const express = require('express')
-const bodyParser = require('body-parser')
-const app = express()
-app.use(bodyParser.json())
-
-// executor config
-const executorConfig = {
-  uri: '/job',
-  app,
-  appType: 'koa', // or 'express'
-  scheduleCenterUrl: 'http://127.0.0.1:8080/xxl-job-admin',
-  executorKey: 'xxl-job-executor-nodejs',
-  executorUrl: 'http://127.0.0.1:3000/job',
-  accessToken: '9217CF7406F643BEB71CC00731129CC9',
-  jobLogPath: 'logs/job',
-  jobHandlers,
-}
-
-// apply middleware
-const { applyExecutorMiddleware } = require('xxl-job-executor-nodejs')
-applyExecutorMiddleware(executorConfig)
-
-app.listen(3000, '127.0.0.1', () => console.log('server startup'))
-
 ```
+
+### 测试截图
+![注册节点](./examples/screenshot/executor-addresses.png) 
+![调度日志](./examples/screenshot/schedule-log-1.png)

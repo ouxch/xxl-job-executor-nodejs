@@ -9,8 +9,17 @@
     "debug": "^4.3.1",
     "express": "^4.17.1",
     "folktale": "^2.3.2",
-    "lodash": "^4.17.21",
     "moment": "^2.29.1",
     "ramda": "^0.27.1"
+  },
+  "devDependencies": {
+    "body-parser": "^1.19.0",
+    "cross-env": "^7.0.3",
+    "koa": "^2.13.1",
+    "koa-bodyparser": "^4.3.0"
+  },
+  "scripts": {
+    "express": "cross-env DEBUG=\"info|warn|error|debug|trace|x\" DEBUG_COLORS=true node examples/express.js",
+    "koa": "cross-env DEBUG=\"info|warn|error|debug|trace|x\" DEBUG_COLORS=true node examples/koa.js"
   }
 }
