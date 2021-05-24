@@ -1,11 +1,11 @@
 const EventEmitter = require('events')
-const fs = require('fs')
+const lineByLine = require('n-readlines')
 const moment = require('moment')
 const KoaRouter = require('@koa/router')
 const { Router: ExpressRouter } = require('express')
 const { mkdir, prop, path, pathOr, pick, compose, format, omitNil, propOr, postTask, Task, tapTask } =
   require('./utils/purefuncs')
-const formatData = compose(format, propOr({}, 'data'))
+const formatData = compose(format, omitNil, propOr({}, 'data'))
 const xxlPostTask = ({ url, data, config }) => postTask(url, data, config)
 const logger = require('./utils/logger')
 const log = logger('xxl-job-executor')
@@ -64,10 +64,10 @@ class Executor {
     // access log
     this.router.use(this.executorUri, (req, res, next) => {
       res.status(200)
-      const { url, method } = req
+      const { url, method, body } = req
       const begin = Date.now()
       next()
-      log.info(method, url, res.statusCode, `${Date.now() - begin}ms`)
+      log.info(method, url, res.statusCode, `${Date.now() - begin}ms`, format(body))
     })
     // authentication
     this.router.use(this.executorUri, (req, res, next) => {
@@ -88,10 +88,10 @@ class Executor {
     // access log
     this.router.use(this.executorUri, (ctx, next) => {
       ctx.status = 200
-      const { url, method } = propOr({}, 'request', ctx)
+      const { url, method, body } = propOr({}, 'request', ctx)
       const begin = Date.now()
       next()
-      log.info(method, url, ctx.status, `${Date.now() - begin}ms`)
+      log.info(method, url, ctx.status, `${Date.now() - begin}ms`, format(body))
     })
     // authentication
     this.router.use(this.executorUri, (ctx, next) => {
@@ -144,10 +144,11 @@ class Executor {
       res.send(this.killJob())
     })
     // view job's execution log
-    this.router.post(`${this.executorUri}/log`, (...contexts) => {
+    this.router.post(`${this.executorUri}/log`, async (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
       const { logDateTim: logDateTime, logId, fromLineNum } = propOr({}, 'body', req)
-      res.send(this.readLog(logDateTime, logId, fromLineNum))
+      const data = await this.readLog(logDateTime, logId, fromLineNum)
+      res.send(data)
     })
   }
 
@@ -189,40 +190,37 @@ class Executor {
    * @param logDateTime - 本次调度日志时间
    */
   run({ jobId, executorHandler, executorParams, executorTimeout, logId, logDateTime }) {
-    try {
-      // 检查任务标识是否有效
-      const jobHandler = this.jobHandlers.get(executorHandler)
-      if (!jobHandler) {
-        return { code: 500, msg: `no matched jobHandler(${executorHandler})` }
-      }
-      // 是否有相同任务正在执行
-      if (this.runningJobs.has(jobId)) {
-        return { code: 500, msg: `There is already have a same job is running, jobId:${jobId}` }
-      }
-
-      this.runningJobs.add(jobId)
-
-      // setup timeout
-      let timeout = undefined
-      if (!!executorTimeout) {
-        timeout = setTimeout(() => this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: 'timeout' }),
-          executorTimeout * 1000)
-      }
-
-      // build logger for this job
-      const logNameSpace = `${moment(logDateTime, 'x').format('YYYY-MM-DD')}-${logId}`
-      const logFilePath = this.getLogFilePath(logDateTime, logId)
-      const jobLogger = logger(logNameSpace, logFilePath)
-
-      // execute job
-      jobHandler({ jobLogger, ...omitNil(executorParams) })
-        .then(() => this.jobEmitter.emit(JobEvent.SUCCESS, { jobId, logId }))
-        .catch((err) => this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: prop('message', err) }))
-        .then(() => !!timeout && clearTimeout(timeout))
-      return { code: 200, msg: 'success' }
-    } catch (err) {
-      return { code: 500, msg: propOr(err.toString(), 'message', err) }
+    // check executorHandler
+    const jobHandler = this.jobHandlers.get(executorHandler)
+    if (!jobHandler) {
+      return { code: 500, msg: `no matched jobHandler(${executorHandler})` }
     }
+    // check duplicate job
+    if (this.runningJobs.has(jobId)) {
+      return { code: 500, msg: `There is already have a same job is running, jobId:${jobId}` }
+    }
+
+    this.runningJobs.add(jobId)
+
+    // setup timeout
+    let timeout = undefined
+    if (!!executorTimeout) {
+      timeout = setTimeout(() => this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: 'timeout' }),
+        executorTimeout * 1000)
+    }
+
+    // build logger for this job
+    const logNameSpace = `${executorHandler}-${logId}`
+    const logFilePath = this.getLogFilePath(logDateTime, logId)
+    const jobLogger = logger(logNameSpace, logFilePath)
+
+    // execute job
+    jobHandler(jobLogger, JSON.parse(executorParams))
+      .then(() => this.jobEmitter.emit(JobEvent.SUCCESS, { jobId, logId }))
+      .catch((err) => this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: prop('message', err) }))
+      .then(() => !!timeout && clearTimeout(timeout))
+      .then(jobLogger.closeLogger)
+    return { code: 200, msg: 'success' }
   }
 
   /**
@@ -238,18 +236,29 @@ class Executor {
    * @param logDateTime - 本次调度日志时间
    * @param logId - 本次调度日志ID
    * @param fromLineNum - 日志开始行号
-   * @return {*} - fromLineNum:日志开始行数; toLineNum:日志结束行号; logContent:日志内容; isEnd:日志是否全部加载完
+   * @return {*} - fromLineNum:日志开始行号; toLineNum:日志结束行号; logContent:日志内容
    */
-  readLog(logDateTime, logId, fromLineNum) {
+  async readLog(logDateTime, logId, fromLineNum) {
+    let logContent
+    let toLineNum
     try {
-      const logFilePath = this.getLogFilePath(logDateTime, logId)
-      const logContent = fs.readFileSync(logFilePath, { encoding: 'utf-8' })
-      const toLineNum = !!logContent ? logContent.split('\n').length : 0
-      return { code: 200, content: { fromLineNum, toLineNum, logContent, isEnd: true } }
+      const liner = new lineByLine(this.getLogFilePath(logDateTime, logId))
+      let line, lineNumber = 0
+      const lines = []
+      while (line = liner.next()) {
+        lineNumber++
+        if (lineNumber < fromLineNum) continue
+        lines.push(line.toString('ascii'))
+      }
+      toLineNum = fromLineNum + lines.length - 1
+      lines.unshift('')
+      logContent = lines.join('\n')
     } catch (err) {
-      log.err('readLog error:', err)
-      return { code: 500, msg: propOr(err.toString(), 'message', err) }
+      log.err('readLog exception', err)
+      toLineNum = fromLineNum
+      logContent = propOr(err.toString(), 'message', err)
     }
+    return { code: 200, content: { fromLineNum, toLineNum, logContent } }
   }
 
   /**

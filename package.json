@@ -10,6 +10,7 @@
     "express": "^4.17.1",
     "folktale": "^2.3.2",
     "moment": "^2.29.1",
+    "n-readlines": "^1.0.1",
     "ramda": "^0.27.1"
   },
   "devDependencies": {
@@ -19,7 +20,7 @@
     "koa-bodyparser": "^4.3.0"
   },
   "scripts": {
-    "express": "cross-env DEBUG=\"info|warn|error|debug|trace|x\" DEBUG_COLORS=true node examples/express.js",
-    "koa": "cross-env DEBUG=\"info|warn|error|debug|trace|x\" DEBUG_COLORS=true node examples/koa.js"
+    "express": "cross-env DEBUG=\"info|warn|error|debug|trace|x\" DEBUG_COLORS=false node examples/express.js",
+    "koa": "cross-env DEBUG=\"info|warn|error|debug|trace|x\" DEBUG_COLORS=false node examples/koa.js"
   }
 }

@@ -4,8 +4,8 @@ const { format } = require('./purefuncs')
 const debug = require('debug')
 
 const dErr = debug('error')
-const dInfo = debug('info')
-const dWarn = debug('warn')
+const dInfo = debug('info ')
+const dWarn = debug('warn ')
 const dDebug = debug('debug')
 const dTrace = debug('trace')
 
@@ -18,11 +18,18 @@ module.exports = (ns, logFilePath) => {
     trace: dTrace.extend(ns),
   }
   if (!!logFilePath) {
-    const logFunc = (...data) => {
-      const content = data.map((value) => typeof (value) === 'string' ? value : format(value)).join(' ')
-      fs.writeFileSync(logFilePath, content + os.EOL, { flag: 'a' })
+    const writeStream = fs.createWriteStream(logFilePath, {
+      flags: 'w',
+      encoding: 'utf8',
+      autoClose: true,
+      emitClose: true
+    })
+    const write = (...data) => {
+      const content = data.map((ele) => typeof ele === 'string' ? ele : format(ele)).join(' ')
+      writeStream.write(`${content}${os.EOL}`)
     }
-    Object.keys(logger).forEach((funcName) => logger[funcName].log = logFunc)
+    Object.keys(logger).forEach((funcName) => logger[funcName].log = write)
+    logger.closeLogger = () => writeStream.end()
   }
   return logger
 }

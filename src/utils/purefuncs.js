@@ -17,7 +17,7 @@ const tap = R.tap
 const Task = FC.task
 const tapTask = (f) => compose(Task.of, tap(f))
 const postTask = Task.fromPromised(Axios.post)
-const format = (m, color = false) => util.inspect(omitNil(m), false, 10, color).replace(/\n/g, '').replace(/\s{2,}/g, ' ')
+const format = (m, color = false) => util.inspect(m, false, 10, color).replace(/\n/g, '').replace(/\s{2,}/g, ' ')
 const mkdir = (path) => {
   try {
     fs.accessSync(path, fs.constants.R_OK | fs.constants.W_OK)
