@@ -1,11 +1,24 @@
+const os = require('os')
+const Path = require('path')
 const EventEmitter = require('events')
-const lineByLine = require('n-readlines')
 const moment = require('moment')
-const KoaRouter = require('@koa/router')
-const { Router: ExpressRouter } = require('express')
-const { mkdir, prop, path, pathOr, pick, compose, format, omitNil, propOr, postTask, Task, tapTask } =
-  require('./utils/purefuncs')
-const formatData = compose(format, omitNil, propOr({}, 'data'))
+const {
+  last,
+  mkdir,
+  path,
+  pathOr,
+  pick,
+  grepVersion,
+  grepFile,
+  grepWithQFGets,
+  omitNil,
+  propOr,
+  postTask,
+  Task,
+  tapTask,
+  appendExecutePermission4Grep,
+} = require('./utils/purefuncs')
+
 const xxlPostTask = ({ url, data, config }) => postTask(url, data, config)
 const logger = require('./utils/logger')
 const log = logger('xxl-job-executor')
@@ -16,135 +29,147 @@ class JobEmitter extends EventEmitter {
 const JobEvent = { SUCCESS: 'SUCCESS', FAIL: 'FAIL' }
 
 class Executor {
-  constructor(appType, executorUri, executorUrl, executorKey, scheduleCenterUrl, accessToken, jobLogPath, jobHandlers) {
-    this.appType = appType
-    this.executorUri = executorUri
-    this.executorUrl = executorUrl
+  constructor(executorKey, scheduleCenterUrl, accessToken, jobLogPath, jobHandlers) {
     this.executorKey = executorKey
     this.scheduleCenterUrl = scheduleCenterUrl
     this.accessToken = accessToken
     this.jobLogPath = jobLogPath
     this.jobHandlers = jobHandlers
-    this.runningJobs = new Set()
-
-    // create router
-    switch (appType) {
-      case 'EXPRESS':
-        this.router = new ExpressRouter()
-        this.initExpressRouter()
-        break
-      case 'KOA':
-        this.router = new KoaRouter()
-        this.initKoaRouter()
-        break
-      default:
-        throw 'unsupported appType, only express or koa'
-    }
-    this.addRoutes()
 
     // init jobs and event
-    mkdir(jobLogPath)
+    this.runningJobs = new Set()
+    mkdir(this.jobLogPath)
     const jobEmitter = new JobEmitter()
     this.jobEmitter = jobEmitter
-    jobEmitter.on('error', (err) => log.err('jobEmitter on error:', err))
-    jobEmitter.on(JobEvent.SUCCESS, async ({ jobId, logId }) => {
+    jobEmitter.on('error', (err) => log.err('jobEmitter on error:', err.message || JSON.stringify(err)))
+    jobEmitter.on(JobEvent.SUCCESS, async ({ jobId, logId, jobLogger }) => {
+      jobLogger.info('job end')
+      jobLogger.closeLogger()
       await this.callback({ logId })
       this.runningJobs.delete(jobId)
     })
-    jobEmitter.on(JobEvent.FAIL, async ({ jobId, logId, handleMsg }) => {
+    jobEmitter.on(JobEvent.FAIL, async ({ jobId, logId, handleMsg, jobLogger }) => {
+      jobLogger.info('job end')
+      jobLogger.closeLogger()
       await this.callback({ logId, handleCode: 500, handleMsg })
       this.runningJobs.delete(jobId)
     })
+
+    // init grep script permission
+    this.grepSupported = !!grepVersion()
+    if (this.grepSupported) appendExecutePermission4Grep()
+  }
+
+  async applyMiddleware({ app, appType, appDomain, uri }) {
+    switch (appType) {
+      case 'EXPRESS': {
+        const Express = require('express')
+        const Router = Express.Router
+        this.router = new Router()
+        this.initExpressRouter(uri)
+        app.use(this.router)
+        break
+      }
+      case 'KOA': {
+        const KoaRouter = require('@koa/router')
+        this.router = new KoaRouter()
+        this.initKoaRouter(uri)
+        app.use(this.router.routes(), this.router.allowedMethods())
+        break
+      }
+      default:
+        throw 'unsupported appType, just support express or koa'
+    }
+    this.appType = appType
+    this.executorUrl = appDomain + uri
+    await this.registry()
   }
 
   /**
    * 初始化适用于express的router
    */
-  initExpressRouter() {
+  initExpressRouter(uri) {
     // access log
-    this.router.use(this.executorUri, (req, res, next) => {
+    this.router.use(uri, async (req, res, next) => {
       res.status(200)
       const { url, method, body } = req
       const begin = Date.now()
-      next()
-      log.info(method, url, res.statusCode, `${Date.now() - begin}ms`, format(body))
+      await next()
+      log.info('%s %s %d %s %o', method, url, res.statusCode, `${Date.now() - begin}ms`, body)
     })
     // authentication
-    this.router.use(this.executorUri, (req, res, next) => {
-      const token = path(['headers', 'xxl-job-access-token'], req)
+    this.router.use(uri, async (req, res, next) => {
+      const token = path([ 'headers', 'xxl-job-access-token' ], req)
       if (!!this.accessToken && this.accessToken !== token) {
-        res.send({ code: 500, msg: 'The access token is wrong.' })
+        res.send({ code: 500, msg: 'the access token is wrong.' })
         return
       }
-      if (!propOr(false, 'body', req)) throw 'please apply body-parser middleware first'
-      next()
+      if (!propOr(false, 'body', req)) {
+        res.send({ code: 500, msg: 'need apply body-parser middleware first.' })
+        return
+      }
+      await next()
     })
+    this.addRoutes(uri)
   }
 
   /**
    * 初始化适用于koa的router
    */
-  initKoaRouter() {
+  initKoaRouter(uri) {
     // access log
-    this.router.use(this.executorUri, (ctx, next) => {
+    this.router.use(uri, async (ctx, next) => {
       ctx.status = 200
       const { url, method, body } = propOr({}, 'request', ctx)
       const begin = Date.now()
-      next()
-      log.info(method, url, ctx.status, `${Date.now() - begin}ms`, format(body))
+      await next()
+      log.info('%s %s %d %s %o', method, url, ctx.status, `${Date.now() - begin}ms`, body)
     })
     // authentication
-    this.router.use(this.executorUri, (ctx, next) => {
-      const token = path(['request', 'headers', 'xxl-job-access-token'], ctx)
+    this.router.use(uri, async (ctx, next) => {
+      const token = path([ 'request', 'headers', 'xxl-job-access-token' ], ctx)
       if (!!this.accessToken && this.accessToken !== token) {
         ctx.body = { code: 500, msg: 'The access token is wrong.' }
         return
       }
-      if (!pathOr(false, ['request', 'body'], ctx)) throw 'please apply koa-bodyparser middleware first'
-      next()
+      if (!pathOr(false, [ 'request', 'body' ], ctx)) {
+        ctx.body = { code: 500, msg: 'Please apply koa-bodyparser middleware first.' }
+        return
+      }
+      await next()
     })
-  }
-
-  wrappedHandler(contexts) {
-    switch (this.appType) {
-      case 'EXPRESS':
-        const [req, res] = contexts
-        return { req, res }
-      case 'KOA':
-        const [ctx] = contexts
-        return { req: propOr({}, 'request', ctx), res: { send: (body) => ctx.body = body } }
-    }
+    this.addRoutes(uri)
   }
 
   /**
    * 添加xxl-job相关的路由，供调度中心访问
    */
-  addRoutes() {
+  addRoutes(baseUri) {
     // detect whether the executor is online
-    this.router.post(`${this.executorUri}/beat`, (...contexts) => {
+    this.router.post(`${baseUri}/beat`, (...contexts) => {
       const { res } = this.wrappedHandler(contexts)
       res.send(this.beat())
     })
     // check whether is already have the same job is running
-    this.router.post(`${this.executorUri}/idleBeat`, (...contexts) => {
+    this.router.post(`${baseUri}/idleBeat`, (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
-      const jobId = pathOr(-1, ['body', 'jobId'], req)
+      const jobId = pathOr(-1, [ 'body', 'jobId' ], req)
       res.send(this.idleBeat(jobId))
     })
     // trigger job
-    this.router.post(`${this.executorUri}/run`, (...contexts) => {
+    this.router.post(`${baseUri}/run`, (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
-      const jobCtx = pick(['jobId', 'executorHandler', 'executorParams', 'executorTimeout', 'logId', 'logDateTime'],
+      const jobCtx = pick([ 'jobId', 'executorHandler', 'executorParams', 'executorTimeout', 'logId', 'logDateTime' ],
         propOr({}, 'body', req))
       res.send(this.run(jobCtx))
     })
     // kill job
-    this.router.post(`${this.executorUri}/kill`, (...contexts) => {
-      const { res } = this.wrappedHandler(contexts)
-      res.send(this.killJob())
+    this.router.post(`${baseUri}/kill`, (...contexts) => {
+      const { req, res } = this.wrappedHandler(contexts)
+      res.send(this.killJob(pathOr(-1, [ 'body', 'jobId' ], req)))
     })
     // view job's execution log
-    this.router.post(`${this.executorUri}/log`, async (...contexts) => {
+    this.router.post(`${baseUri}/log`, async (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
       const { logDateTim: logDateTime, logId, fromLineNum } = propOr({}, 'body', req)
       const data = await this.readLog(logDateTime, logId, fromLineNum)
@@ -152,16 +177,19 @@ class Executor {
     })
   }
 
-  apply(app) {
+  /**
+   * 将koa和express的request body处理成相同的结构，方便后边router处理
+   * @param {any} contexts
+   * @return {Object}
+   */
+  wrappedHandler(contexts) {
     switch (this.appType) {
       case 'EXPRESS':
-        app.use(this.router)
-        break
+        const [ req, res ] = contexts
+        return { req, res }
       case 'KOA':
-        app.use(this.router.routes(), this.router.allowedMethods())
-        break
-      default:
-        break
+        const [ ctx ] = contexts
+        return { req: propOr({}, 'request', ctx), res: { send: (body) => ctx.body = body } }
     }
   }
 
@@ -183,17 +211,17 @@ class Executor {
   /**
    * 触发任务执行
    * @param jobId - 任务ID
-   * @param executorHandler - 任务标识
-   * @param executorParams - 任务参数
+   * @param handlerName - 任务的handler名字
+   * @param jobJsonParams - 任务参数
    * @param executorTimeout - 任务超时时间，单位秒，大于零时生效
    * @param logId - 本次调度日志ID
    * @param logDateTime - 本次调度日志时间
    */
-  run({ jobId, executorHandler, executorParams, executorTimeout, logId, logDateTime }) {
+  run({ jobId, executorHandler: handlerName, executorParams: jobJsonParams, executorTimeout, logId, logDateTime }) {
     // check executorHandler
-    const jobHandler = this.jobHandlers.get(executorHandler)
+    const jobHandler = this.jobHandlers.get(handlerName)
     if (!jobHandler) {
-      return { code: 500, msg: `no matched jobHandler(${executorHandler})` }
+      return { code: 500, msg: `no matched jobHandler(${handlerName})` }
     }
     // check duplicate job
     if (this.runningJobs.has(jobId)) {
@@ -210,16 +238,27 @@ class Executor {
     }
 
     // build logger for this job
-    const logNameSpace = `${executorHandler}-${logId}`
-    const logFilePath = this.getLogFilePath(logDateTime, logId)
+    const logNameSpace = this.getJobLoggerNamespace(handlerName, logDateTime, logId)
+    const logFilePath = this.getLogFilePath(logDateTime)
     const jobLogger = logger(logNameSpace, logFilePath)
 
     // execute job
-    jobHandler(jobLogger, JSON.parse(executorParams))
-      .then(() => this.jobEmitter.emit(JobEvent.SUCCESS, { jobId, logId }))
-      .catch((err) => this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: prop('message', err) }))
-      .then(() => !!timeout && clearTimeout(timeout))
-      .then(jobLogger.closeLogger)
+    Task.of(jobJsonParams)
+      .chain((jobJsonParams) => Task.of(!!jobJsonParams ? JSON.parse(jobJsonParams) : {}))
+      .chain((jobParams) => {
+        jobLogger.info('job start')
+        return Task.fromPromised(jobHandler)(jobLogger, jobParams)
+      })
+      .orElse((error) => {
+        jobLogger.err('execute job error', error)
+        this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: error.toString(), jobLogger })
+        return Task.of()
+      })
+      .chain(tapTask(() => {
+        if (!!timeout) clearTimeout(timeout)
+        this.jobEmitter.emit(JobEvent.SUCCESS, { jobId, logId, jobLogger })
+      }))
+      .run().promise()
     return { code: 200, msg: 'success' }
   }
 
@@ -228,7 +267,7 @@ class Executor {
    * @param jobId - 任务ID
    */
   killJob(jobId) {
-    return { code: 500, msg: `not yet support, jobId${jobId}` }
+    return { code: 500, msg: `not yet support, jobId(${jobId})` }
   }
 
   /**
@@ -242,32 +281,36 @@ class Executor {
     let logContent
     let toLineNum
     try {
-      const liner = new lineByLine(this.getLogFilePath(logDateTime, logId))
-      let line, lineNumber = 0
-      const lines = []
-      while (line = liner.next()) {
-        lineNumber++
-        if (lineNumber < fromLineNum) continue
-        lines.push(line.toString('ascii'))
-      }
+      const logFilePath = this.getLogFilePath(logDateTime)
+      const jobLogNamespace = this.getJobLoggerNamespace('', logDateTime, logId) + ' '
+      const grepResult = this.grepSupported
+        ? await grepFile(logFilePath, jobLogNamespace)
+        : await grepWithQFGets(logFilePath, jobLogNamespace, `${jobLogNamespace}job end`)
+      const lines = (grepResult || '').split(os.EOL).slice(fromLineNum - 1)
+      if (last(lines) === '') lines.pop()
       toLineNum = fromLineNum + lines.length - 1
       lines.unshift('')
       logContent = lines.join('\n')
     } catch (err) {
-      log.err('readLog exception', err)
+      log.err('readLog exception', err.message || JSON.stringify(err))
       toLineNum = fromLineNum
-      logContent = propOr(err.toString(), 'message', err)
+      logContent = err.toString()
     }
     return { code: 200, content: { fromLineNum, toLineNum, logContent } }
   }
 
   /**
-   * 通过logId获取日志文件路径
-   * @param dateTime 调度日志时间
-   * @param logId 调度日志ID
+   * 获取日志文件路径
    */
-  getLogFilePath(dateTime, logId) {
-    return `${this.jobLogPath}/${moment(dateTime, 'x').format('YYYY-MM-DD')}-${logId}.log`
+  getLogFilePath(dateTime) {
+    return Path.resolve(process.cwd(), `${this.jobLogPath}/${moment(dateTime, 'x').format('YYYY-MM-DD')}.log`)
+  }
+
+  /**
+   * 获取日志namespace
+   */
+  getJobLoggerNamespace(handlerName, dateTime, logId) {
+    return `${handlerName}-${moment(dateTime, 'x').format('YYMMDD')}-${logId}-executing`
   }
 
   /**
@@ -279,9 +322,9 @@ class Executor {
     const headers = { 'xxl-job-access-token': this.accessToken }
     await Task.of({ url, data, config: { headers } })
       .chain(xxlPostTask)
-      .chain(tapTask((response) => log.info(`registry ==> ${format(data)} ==> ${formatData(response)}`)))
+      .chain(tapTask((response) => log.info('registry ==> %o ==> %o', data, omitNil(propOr({}, 'data', response)))))
       .orElse((err) => {
-        log.err(`registry error:${propOr(err.toString(), 'message', err)}`)
+        log.err('registry error', err.message || JSON.stringify(err))
         return Task.of()
       })
       // register every 30 seconds. no register for more than 90 seconds, the schedule center will remove the executor.
@@ -298,9 +341,9 @@ class Executor {
     const headers = { 'xxl-job-access-token': this.accessToken }
     await Task.of({ url, data, config: { headers } })
       .chain(xxlPostTask)
-      .chain(tapTask((response) => log.info(`registry remove ==> ${format(data)} ==> ${formatData(response)}`)))
+      .chain(tapTask((response) => log.info('registry remove ==> %o ==> %o', data, omitNil(propOr({}, 'data', response)))))
       .orElse((err) => {
-        log.err(`registry remove error:${propOr(err.toString(), 'message', err)}`)
+        log.err('registry remove error', err.message || JSON.stringify(err))
         return Task.of()
       }).run().promise()
   }
@@ -311,12 +354,12 @@ class Executor {
   async callback({ logId, handleCode = 200, handleMsg = 'success' }) {
     const url = `${this.scheduleCenterUrl}/api/callback`
     const headers = { 'xxl-job-access-token': this.accessToken }
-    const data = [omitNil({ logId, logDateTim: Date.now(), handleCode, handleMsg })]
+    const data = [ omitNil({ logId, logDateTim: Date.now(), handleCode, handleMsg }) ]
     await Task.of({ url, data, config: { headers } })
       .chain(xxlPostTask)
-      .chain(tapTask((response) => log.info(`callback ==> ${format(data[0])} ==> ${formatData(response)}`)))
+      .chain(tapTask((response) => log.info('callback ==> %o ==> %o', data[0], omitNil(propOr({}, 'data', response)))))
       .orElse((err) => {
-        log.err(`callback error:${propOr(err.toString(), 'message', err)}`)
+        log.err('callback error', err.message || JSON.stringify(err))
         return Task.of({})
       }).run().promise()
   }
