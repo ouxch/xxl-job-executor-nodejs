@@ -8,7 +8,7 @@ const dWarn = debug('warn ')
 const dDebug = debug('debug')
 const dTrace = debug('trace')
 
-const { XXL_JOB_DEBUG_LOG = '0' } = process.env
+const { XXL_JOB_DEBUG_LOG } = process.env
 
 module.exports = (ns, logFilePath) => {
   const logger = {
@@ -32,7 +32,7 @@ module.exports = (ns, logFilePath) => {
     Object.keys(logger).forEach((funcName) => logger[funcName].log = write)
     logger.closeLogger = () => writeStream.end()
   } else {
-    if (XXL_JOB_DEBUG_LOG === '1') Object.keys(logger).forEach((funcName) => logger[funcName].log = () => {})
+    if (XXL_JOB_DEBUG_LOG !== '1') Object.keys(logger).forEach((funcName) => logger[funcName].log = () => {})
   }
   return logger
 }
