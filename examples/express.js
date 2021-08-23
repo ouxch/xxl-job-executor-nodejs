@@ -1,5 +1,3 @@
-const log = require('../src/utils/logger')('executor-example-express')
-
 /* 设置环境变量 */
 const xxlJobEnv = {
   // 执行器AppName，在调度中心配置执行器时使用
@@ -14,6 +12,8 @@ const xxlJobEnv = {
   XXL_JOB_DEBUG_LOG: '1',
 }
 Object.assign(process.env, xxlJobEnv)
+
+const log = require('../src/utils/logger')('executor-example-express')
 
 // 构造 express 实例
 const express = require('express')()
