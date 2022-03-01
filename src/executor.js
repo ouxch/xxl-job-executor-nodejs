@@ -1,66 +1,38 @@
-const os = require('os')
-const Path = require('path')
-const EventEmitter = require('events')
-const moment = require('moment')
-const {
-  last,
-  mkdir,
-  path,
-  pathOr,
-  pick,
-  grepVersion,
-  grepFile,
-  grepWithQFGets,
-  omitNil,
-  propOr,
-  postTask,
-  Task,
-  tapTask,
-  appendExecutePermission4Grep,
-} = require('./utils/purefuncs')
-
-const xxlPostTask = ({ url, data, config }) => postTask(url, data, config)
-const logger = require('./utils/logger')
+const { last, path, pathOr, pick, omitNil, propOr, postTask, Task, tapTask } = require('./purefuncs')
+const JobManager = require('./job-manager')
+const logger = require('./logger')
 const log = logger('xxl-job-executor')
+const xxlPostTask = ({ url, data, config }) => postTask(url, data, config)
 
-class JobEmitter extends EventEmitter {
-}
-
-const JobEvent = { SUCCESS: 'SUCCESS', FAIL: 'FAIL' }
-
+/**
+ * xxl-job 执行器 restful API
+ * https://www.xuxueli.com/xxl-job/#6.2%20%E6%89%A7%E8%A1%8C%E5%99%A8%20RESTful%20API
+ */
 class Executor {
-  constructor(executorKey, scheduleCenterUrl, accessToken, jobLogPath, jobHandlers) {
+  /**
+   * @param {string} executorKey
+   * @param {string} scheduleCenterUrl
+   * @param {string} accessToken
+   * @param {string} jobLogPath
+   * @param {Map} jobHandlers
+   * @param {*} context
+   */
+  constructor(executorKey, scheduleCenterUrl, accessToken, jobLogPath, jobHandlers, context) {
     this.executorKey = executorKey
     this.scheduleCenterUrl = scheduleCenterUrl
     this.accessToken = accessToken
-    this.jobLogPath = jobLogPath
     this.jobHandlers = jobHandlers
-
-    // init jobs and event
-    this.runningJobs = new Set()
-    mkdir(this.jobLogPath)
-    const jobEmitter = new JobEmitter()
-    this.jobEmitter = jobEmitter
-    jobEmitter.on('error', (err) => log.err('jobEmitter on error:', err.message || JSON.stringify(err)))
-    jobEmitter.on(JobEvent.SUCCESS, async ({ jobId, logId, jobLogger }) => {
-      jobLogger.info('job end')
-      jobLogger.closeLogger()
-      await this.callback({ logId })
-      this.runningJobs.delete(jobId)
-    })
-    jobEmitter.on(JobEvent.FAIL, async ({ jobId, logId, handleMsg, jobLogger }) => {
-      jobLogger.info('job end')
-      jobLogger.closeLogger()
-      await this.callback({ logId, handleCode: 500, handleMsg })
-      this.runningJobs.delete(jobId)
-    })
-
-    // init grep script permission
-    this.grepSupported = !!grepVersion()
-    if (this.grepSupported) appendExecutePermission4Grep()
+    this.jobManager = new JobManager(jobLogPath, context)
   }
 
-  async applyMiddleware({ app, appType, appDomain, uri }) {
+  /**
+   * 应用执行器中间件
+   * @param {*} app
+   * @param {string} appType
+   * @param {string} appDomain
+   * @param {string} uri
+   */
+  applyMiddleware({ app, appType, appDomain, uri }) {
     switch (appType) {
       case 'EXPRESS': {
         const Express = require('express')
@@ -82,30 +54,25 @@ class Executor {
     }
     this.appType = appType
     this.executorUrl = appDomain + uri
-    await this.registry()
   }
 
   /**
    * 初始化适用于express的router
+   * @param {string} uri
    */
   initExpressRouter(uri) {
-    // access log
+    // authentication
     this.router.use(uri, async (req, res, next) => {
       res.status(200)
       const { url, method, body } = req
-      const begin = Date.now()
-      await next()
-      log.info('%s %s %d %s %o', method, url, res.statusCode, `${Date.now() - begin}ms`, body)
-    })
-    // authentication
-    this.router.use(uri, async (req, res, next) => {
-      const token = path([ 'headers', 'xxl-job-access-token' ], req)
+      log.trace('%s %s %o', method, url, omitNil(pick(['jobId', 'executorHandler', 'executorParams', 'executorTimeout', 'logId', 'logDateTime'], body)))
+      const token = path(['headers', 'xxl-job-access-token'], req)
       if (!!this.accessToken && this.accessToken !== token) {
-        res.send({ code: 500, msg: 'the access token is wrong.' })
+        res.send({ code: 500, msg: 'access token incorrect' })
         return
       }
       if (!propOr(false, 'body', req)) {
-        res.send({ code: 500, msg: 'need apply body-parser middleware first.' })
+        res.send({ code: 500, msg: 'need apply body-parser middleware first' })
         return
       }
       await next()
@@ -115,25 +82,21 @@ class Executor {
 
   /**
    * 初始化适用于koa的router
+   * @param {string} uri
    */
   initKoaRouter(uri) {
-    // access log
+    // authentication
     this.router.use(uri, async (ctx, next) => {
       ctx.status = 200
       const { url, method, body } = propOr({}, 'request', ctx)
-      const begin = Date.now()
-      await next()
-      log.info('%s %s %d %s %o', method, url, ctx.status, `${Date.now() - begin}ms`, body)
-    })
-    // authentication
-    this.router.use(uri, async (ctx, next) => {
-      const token = path([ 'request', 'headers', 'xxl-job-access-token' ], ctx)
+      log.trace('%s %s %o', method, url, omitNil(pick(['jobId', 'executorHandler', 'executorParams', 'executorTimeout', 'logId', 'logDateTime'], body)))
+      const token = path(['request', 'headers', 'xxl-job-access-token'], ctx)
       if (!!this.accessToken && this.accessToken !== token) {
-        ctx.body = { code: 500, msg: 'The access token is wrong.' }
+        ctx.body = { code: 500, msg: 'access token incorrect' }
         return
       }
-      if (!pathOr(false, [ 'request', 'body' ], ctx)) {
-        ctx.body = { code: 500, msg: 'Please apply koa-bodyparser middleware first.' }
+      if (!pathOr(false, ['request', 'body'], ctx)) {
+        ctx.body = { code: 500, msg: 'need apply koa-bodyparser middleware first' }
         return
       }
       await next()
@@ -143,30 +106,29 @@ class Executor {
 
   /**
    * 添加xxl-job相关的路由，供调度中心访问
+   * @param {string} baseUri
    */
   addRoutes(baseUri) {
     // detect whether the executor is online
-    this.router.post(`${baseUri}/beat`, (...contexts) => {
+    this.router.post(`${baseUri}/beat`, async (...contexts) => {
       const { res } = this.wrappedHandler(contexts)
       res.send(this.beat())
     })
     // check whether is already have the same job is running
-    this.router.post(`${baseUri}/idleBeat`, (...contexts) => {
+    this.router.post(`${baseUri}/idleBeat`, async (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
-      const jobId = pathOr(-1, [ 'body', 'jobId' ], req)
+      const jobId = pathOr(-1, ['body', 'jobId'], req)
       res.send(this.idleBeat(jobId))
     })
     // trigger job
-    this.router.post(`${baseUri}/run`, (...contexts) => {
+    this.router.post(`${baseUri}/run`, async (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
-      const jobCtx = pick([ 'jobId', 'executorHandler', 'executorParams', 'executorTimeout', 'logId', 'logDateTime' ],
-        propOr({}, 'body', req))
-      res.send(this.run(jobCtx))
+      res.send(this.run(propOr({}, 'body', req)))
     })
     // kill job
-    this.router.post(`${baseUri}/kill`, (...contexts) => {
+    this.router.post(`${baseUri}/kill`, async (...contexts) => {
       const { req, res } = this.wrappedHandler(contexts)
-      res.send(this.killJob(pathOr(-1, [ 'body', 'jobId' ], req)))
+      res.send(this.killJob(pathOr(-1, ['body', 'jobId'], req)))
     })
     // view job's execution log
     this.router.post(`${baseUri}/log`, async (...contexts) => {
@@ -184,17 +146,20 @@ class Executor {
    */
   wrappedHandler(contexts) {
     switch (this.appType) {
-      case 'EXPRESS':
-        const [ req, res ] = contexts
+      case 'EXPRESS': {
+        const [req, res] = contexts
         return { req, res }
-      case 'KOA':
-        const [ ctx ] = contexts
+      }
+      case 'KOA': {
+        const [ctx] = contexts
         return { req: propOr({}, 'request', ctx), res: { send: (body) => ctx.body = body } }
+      }
     }
   }
 
   /**
    * 心跳检测：调度中心检测执行器是否在线时使用
+   * @return {{code: number, msg: string}}
    */
   beat() {
     return { code: 200, msg: 'success' }
@@ -202,20 +167,22 @@ class Executor {
 
   /**
    * 忙碌检测：调度中心检测指定执行器上指定任务是否忙碌（运行中）时使用
-   * @param jobId - 任务ID
+   * @param {string} jobId - 任务ID
+   * @return {{code: number, msg: string}}
    */
   idleBeat(jobId) {
-    return (this.runningJobs.has(jobId) ? { code: 500, msg: 'busy' } : { code: 200, msg: 'idle' })
+    return (this.jobManager.hasJob(jobId) ? { code: 500, msg: 'busy' } : { code: 200, msg: 'idle' })
   }
 
   /**
    * 触发任务执行
-   * @param jobId - 任务ID
-   * @param handlerName - 任务的handler名字
-   * @param jobJsonParams - 任务参数
-   * @param executorTimeout - 任务超时时间，单位秒，大于零时生效
-   * @param logId - 本次调度日志ID
-   * @param logDateTime - 本次调度日志时间
+   * @param {number} jobId - 任务ID
+   * @param {string} handlerName - 任务的handler名字
+   * @param {string} jobJsonParams - 任务参数
+   * @param {number} executorTimeout - 任务超时时间，单位秒，大于零时生效
+   * @param {number} logId - 本次调度日志ID
+   * @param {number} - 本次调度日志时间
+   * @return {{code: number, msg: string}}
    */
   run({ jobId, executorHandler: handlerName, executorParams: jobJsonParams, executorTimeout, logId, logDateTime }) {
     // check executorHandler
@@ -223,48 +190,16 @@ class Executor {
     if (!jobHandler) {
       return { code: 500, msg: `no matched jobHandler(${handlerName})` }
     }
-    // check duplicate job
-    if (this.runningJobs.has(jobId)) {
-      return { code: 500, msg: `There is already have a same job is running, jobId:${jobId}` }
-    }
-
-    this.runningJobs.add(jobId)
-
-    // setup timeout
-    let timeout = undefined
-    if (!!executorTimeout) {
-      timeout = setTimeout(() => this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: 'timeout' }),
-        executorTimeout * 1000)
-    }
-
-    // build logger for this job
-    const logNameSpace = this.getJobLoggerNamespace(handlerName, logDateTime, logId)
-    const logFilePath = this.getLogFilePath(logDateTime)
-    const jobLogger = logger(logNameSpace, logFilePath)
-
     // execute job
-    Task.of(jobJsonParams)
-      .chain((jobJsonParams) => Task.of(!!jobJsonParams ? JSON.parse(jobJsonParams) : {}))
-      .chain((jobParams) => {
-        jobLogger.info('job start')
-        return Task.fromPromised(jobHandler)(jobLogger, jobParams)
-      })
-      .orElse((error) => {
-        jobLogger.err('execute job error', error)
-        this.jobEmitter.emit(JobEvent.FAIL, { jobId, logId, handleMsg: error.toString(), jobLogger })
-        return Task.of()
-      })
-      .chain(tapTask(() => {
-        if (!!timeout) clearTimeout(timeout)
-        this.jobEmitter.emit(JobEvent.SUCCESS, { jobId, logId, jobLogger })
-      }))
-      .run().promise()
+    this.jobManager.runJob(jobId, jobJsonParams, logId, logDateTime, executorTimeout, handlerName, jobHandler, this.callback.bind(this))
+
     return { code: 200, msg: 'success' }
   }
 
   /**
    * 终止任务
-   * @param jobId - 任务ID
+   * @param {number} jobId - 任务ID
+   * @return {{code: number, msg: string}}
    */
   killJob(jobId) {
     return { code: 500, msg: `not yet support, jobId(${jobId})` }
@@ -272,45 +207,27 @@ class Executor {
 
   /**
    * 查看执行日志
-   * @param logDateTime - 本次调度日志时间
-   * @param logId - 本次调度日志ID
-   * @param fromLineNum - 日志开始行号
+   * @param {number} logDateTime - 本次调度日志时间
+   * @param {number} logId - 本次调度日志ID
+   * @param {number} fromLineNum - 日志开始行号
    * @return {*} - fromLineNum:日志开始行号; toLineNum:日志结束行号; logContent:日志内容
    */
   async readLog(logDateTime, logId, fromLineNum) {
     let logContent
     let toLineNum
     try {
-      const logFilePath = this.getLogFilePath(logDateTime)
-      const jobLogNamespace = this.getJobLoggerNamespace('', logDateTime, logId) + ' '
-      const grepResult = this.grepSupported
-        ? await grepFile(logFilePath, jobLogNamespace)
-        : await grepWithQFGets(logFilePath, jobLogNamespace, `${jobLogNamespace}job end`)
-      const lines = (grepResult || '').split(os.EOL).slice(fromLineNum - 1)
+      const lines = await this.jobManager.readJobLog(logDateTime, logId)
+      lines.splice(0, fromLineNum - 1)
       if (last(lines) === '') lines.pop()
       toLineNum = fromLineNum + lines.length - 1
       lines.unshift('')
       logContent = lines.join('\n')
     } catch (err) {
-      log.err('readLog exception', err.message || JSON.stringify(err))
+      log.err('readLog error: %o', err.message || err)
       toLineNum = fromLineNum
       logContent = err.toString()
     }
     return { code: 200, content: { fromLineNum, toLineNum, logContent } }
-  }
-
-  /**
-   * 获取日志文件路径
-   */
-  getLogFilePath(dateTime) {
-    return Path.resolve(process.cwd(), `${this.jobLogPath}/${moment(dateTime, 'x').format('YYYY-MM-DD')}.log`)
-  }
-
-  /**
-   * 获取日志namespace
-   */
-  getJobLoggerNamespace(handlerName, dateTime, logId) {
-    return `${handlerName}-${moment(dateTime, 'x').format('YYMMDD')}-${logId}-executing`
   }
 
   /**
@@ -320,15 +237,12 @@ class Executor {
     const url = `${this.scheduleCenterUrl}/api/registry`
     const data = { 'registryGroup': 'EXECUTOR', 'registryKey': this.executorKey, 'registryValue': this.executorUrl }
     const headers = { 'xxl-job-access-token': this.accessToken }
-    await Task.of({ url, data, config: { headers } })
-      .chain(xxlPostTask)
-      .chain(tapTask((response) => log.info('registry ==> %o ==> %o', data, omitNil(propOr({}, 'data', response)))))
+    await xxlPostTask({ url, data, config: { headers } })
+      .chain(tapTask((response) => log.trace('registry %o ==> %o', data, omitNil(propOr({}, 'data', response)))))
       .orElse((err) => {
-        log.err('registry error', err.message || JSON.stringify(err))
+        log.err('registry error: %o', err.message || err)
         return Task.of()
       })
-      // register every 30 seconds. no register for more than 90 seconds, the schedule center will remove the executor.
-      .chain(tapTask(() => setTimeout(this.registry.bind(this), 30000)))
       .run().promise()
   }
 
@@ -341,29 +255,32 @@ class Executor {
     const headers = { 'xxl-job-access-token': this.accessToken }
     await Task.of({ url, data, config: { headers } })
       .chain(xxlPostTask)
-      .chain(tapTask((response) => log.info('registry remove ==> %o ==> %o', data, omitNil(propOr({}, 'data', response)))))
+      .chain(tapTask((response) => log.trace('registry remove %o ==> %o', data, omitNil(propOr({}, 'data', response)))))
       .orElse((err) => {
-        log.err('registry remove error', err.message || JSON.stringify(err))
+        log.err('registry remove error: %o', err.message || err)
         return Task.of()
       }).run().promise()
   }
 
   /**
    * 任务回调：执行器执行完任务后，回调任务结果时使用
+   * @param {*} error
+   * @param {{logId: number, result: any}} jobResult
    */
-  async callback({ logId, handleCode = 200, handleMsg = 'success' }) {
+  async callback(error, { logId, result }) {
     const url = `${this.scheduleCenterUrl}/api/callback`
     const headers = { 'xxl-job-access-token': this.accessToken }
-    const data = [ omitNil({ logId, logDateTim: Date.now(), handleCode, handleMsg }) ]
+
+    const handleCode = error ? 500 : 200
+    const handleMsg = error ? error.message || error.toString() : (result ? JSON.stringify(result) : 'success')
+    const data = [{ logId, logDateTim: Date.now(), handleCode, handleMsg }]
+
     await Task.of({ url, data, config: { headers } })
       .chain(xxlPostTask)
-      .chain(tapTask((response) => log.info('callback ==> %o ==> %o', data[0], omitNil(propOr({}, 'data', response)))))
-      .orElse((err) => {
-        log.err('callback error', err.message || JSON.stringify(err))
-        return Task.of({})
-      }).run().promise()
+      .chain(tapTask((response) => log.trace('callback %o ==> %o', data[0], omitNil(propOr({}, 'data', response)))))
+      .orElse(tapTask((err) => log.err('callback error: %o', err.message || err)))
+      .run().promise()
   }
-
 }
 
 module.exports = Executor

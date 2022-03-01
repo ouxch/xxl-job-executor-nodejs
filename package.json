@@ -1,26 +1,24 @@
 {
   "name": "xxl-job-executor-nodejs",
-  "version": "0.0.1",
-  "main": "./src/index.js",
+  "version": "0.0.2",
+  "main": "index.js",
   "license": "MIT",
   "dependencies": {
     "axios": "^0.21.1",
     "debug": "^4.3.1",
     "folktale": "^2.3.2",
     "moment": "^2.29.1",
-    "qfgets": "^1.1.1",
     "ramda": "^0.27.1"
   },
   "devDependencies": {
     "@koa/router": "^10.0.0",
     "body-parser": "^1.19.0",
-    "cross-env": "^7.0.3",
     "express": "^4.17.1",
     "koa": "^2.13.1",
     "koa-bodyparser": "^4.3.0"
   },
   "scripts": {
-    "express": "cross-env DEBUG=\"info|warn|error|debug|trace\" DEBUG_COLORS=false node examples/express.js",
-    "koa": "cross-env DEBUG=\"info|warn|error|debug|trace\" DEBUG_COLORS=false node examples/koa.js"
+    "express": "node examples/express.js",
+    "koa": "node examples/koa.js"
   }
 }
