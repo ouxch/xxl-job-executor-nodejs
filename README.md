@@ -7,7 +7,7 @@
 1. 添加子模块
 
 ```shell
-git submodule add https://bit.dev.xinfujinan.com/scm/console/xxl-job-executor-nodejs.git modules/xxl-job-executor-nodejs
+git submodule add https://github.com/Aouchinx/xxl-job-executor-nodejs.git modules/xxl-job-executor-nodejs
 ```
 
 2. 更新子模块
