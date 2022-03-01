@@ -4,20 +4,20 @@
 
 ### 添加组件
 
-1. 添加子模块
+1.添加子模块
 
 ```shell
 git submodule add https://github.com/Aouchinx/xxl-job-executor-nodejs.git modules/xxl-job-executor-nodejs
 ```
 
-2. 更新子模块
+2.更新子模块
 
 ```shell
 git submodule init
 git submodule update --remote
 ```
 
-3. 添加组件依赖
+3.添加组件依赖
 
 ```json
 {
@@ -31,26 +31,27 @@ git submodule update --remote
 
 ### 使用组件
 
-1. 定义任务执行函数
+1.定义任务执行函数
 
 ```javascript
 /**
- * @param {any} jobLogger 由xxl-job组件初始化的logger，任务执行日志通过 jobLogger 记录，可在调度中心查看
- * @param {any} jobParams 任务执行参数(可选)，在调度中心配置定时任务或手动触发任务时设置的执行参数
+ * demo任务
+ * @param {any} jobLogger 由xxl-job组件定义的任务logger，会将日志内容输出到文件，可在调度中心查看执行日志
+ * @param {{ jobParam1: any, jobParam2: any }} jobParams 任务参数
  * @param {Object} context 任务上下文
- * @return {Promise<void>} 函数必须定义成异步的(返回值是一个 promise)
+ * @return {Promise<void>} 函数必须返回一个 promise
  */
-const demoJobHandler = async (jobLogger, { jobParam1, jobParam2 }, { database }) => {
-    jobLogger.info('jobParam1: %o, jobParam2: %o, database: %o, it will takes about 10 seconds', jobParam1, jobParam2, database)
+const demoJobHandler = async (jobLogger, jobParams, context) => {
+    jobLogger.debug('params: %o, context: %o', jobParams, context)
     const sleep = async (millis) => new Promise((resolve) => setTimeout(resolve, millis))
-    for (let i = 1; i <= 10; i++) {
+    for (let i = 1; i < 10; i++) {
       await sleep(1000)
       jobLogger.debug(`${i}s passed`)
     }
   }
 ```
 
-2. 配置环境变量
+2.配置环境变量
 
 ```dotenv
 # 执行器AppName，在调度中心配置执行器时使用
@@ -65,7 +66,7 @@ XXL_JOB_JOB_LOG_PATH=logs/job
 XXL_JOB_DEBUG_LOG=true
 ```
 
-3. 应用组件
+3.应用组件
 
 ```javascript
 const XxlJobExecutor = require('xxl-job-executor-nodejs')
@@ -79,6 +80,17 @@ await xxlJobExecutor.applyMiddleware({ app, appType, appDomain, path })
 
 ---
 
-### 测试截图
+### Examples
+
+examples 目录提供了 `express` 和 `koa` 应用的集成示例
+
+运行示例：
+
+```shell
+yarn express # 启动一个 express 服务注册到调度中心
+yarn koa # 启动一个 koa 服务注册到调度中心
+```
+
+效果截图：
 
 ![](./examples/screenshot/preview.png)
