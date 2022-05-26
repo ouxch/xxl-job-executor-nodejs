@@ -18,7 +18,7 @@ git submodule update --remote
 
 ### usage
 
-1.job handler
+1. job handler
 
 ```javascript
 /**
@@ -38,7 +38,7 @@ const demoJobHandler = async (logger, jobParams, context) => {
   }
 ```
 
-2.envionment variables
+2. envionment variables
 
 ```dotenv
 XXL_JOB_EXECUTOR_KEY=executor-example-express
@@ -50,7 +50,7 @@ XXL_JOB_JOB_LOG_PATH=logs/job
 XXL_JOB_DEBUG_LOG=true
 ```
 
-3.apply executor
+3. apply executor
 
 ```javascript
 const XxlJobExecutor = require('xxl-job-executor-nodejs')
